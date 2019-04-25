@@ -1,4 +1,5 @@
 github.com/lib/pq v1.1.0 h1:/5u4a+KGJptBRqGzPvYQL9p0d/tPR4S31+Tnzj9lEO4=
 github.com/lib/pq v1.1.0/go.mod h1:5WUZQaWbwv1U+lTReE5YruASi9Al49XbQIvNi/34Woo=
 golang.org/x/exp v0.0.0-20190422150234-47ea93f3503f h1:j3TeKJPjNmUXv8QhDMOlbkAuQo75O4mqxLj+3sZfW6w=
+golang.org/x/exp v0.0.0-20190424083841-8c7d1c524af6 h1:tvq9A/nx8IAf4LoyzrRj/QBhRXfDr/OpIsVnyk2i/SQ=
 golang.org/x/exp/notary v0.0.0-20190422150234-47ea93f3503f h1:szStvJQ2ETT/s0DmE3+Qu3/XczHVEGaNUkMTjxMD6Rc=

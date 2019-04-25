@@ -5,15 +5,17 @@
 package cockroachdb
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 
-	"github.com/lib/pq"
-	"golang.org/x/exp/notary/internal/database"
+	_ "github.com/lib/pq"
+	"golang.org/x/exp/sumdb/internal/tkv"
 )
+
+const tableName = "tkv"
 
 // A DB is a connection to a cockroach database.
 type DB struct {
@@ -21,10 +23,10 @@ type DB struct {
 	client *sql.DB
 }
 
-// OpenDB opens the cockroachdb with the given name and connect string.
+// OpenStorage opens the cockroachdb with the given name and connect string.
 // (for example, "postgres://pqgotest:password@localhost/pqgotest?sslmode=verify-full").
 // The database must already exist.
-func OpenDB(ctx context.Context, name string) (*DB, error) {
+func OpenStorage(ctx context.Context, name string) (*DB, error) {
 	connStr := os.Getenv("CONNSTR")
 	client, err := sql.Open("postgres", connStr)
 	if err != nil {
@@ -34,109 +36,132 @@ func OpenDB(ctx context.Context, name string) (*DB, error) {
 	return db, nil
 }
 
-// CreateDB creates a cockroachdb with the given name
-// (for example, "projects/my-project/instances/my-instance/databases/my_db").
+// CreateStorage creates a cockroachdb with the given name
+// (for example, "postgres://pqgotest:password@localhost/pqgotest?sslmode=verify-full").
 // The database must not already exist.
-func CreateDB(ctx context.Context, name string) (*DB, error) {
-	db, err := OpenDB(ctx, name)
+func CreateStorage(ctx context.Context, name string) (*DB, error) {
+	db, err := OpenStorage(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	_, err = db.Exec("CREATE DATABASE $1", name)
+	_, err = db.client.Exec("CREATE DATABASE " + name)
+	if err != nil {
+		return nil, err
+	}
+
+	sm := "CREATE TABLE " + tableName + " (key STRING PRIMARY KEY,value STRING);"
+	_, err = db.client.Exec(sm)
 	if err != nil {
 		return nil, err
 	}
 	return db, nil
 }
 
-// DeleteTestDB deletes the cockroachdb with the given name.
-// To avoid unfortunate accidents, DeleteTestDB returns an error
+// DeleteTestStorage deletes the cockroachdb with the given name.
+// To avoid unfortunate accidents, DeleteTestStorage returns an error
 // if the database name does not begin with "test_".
-func DeleteTestDB(ctx context.Context, name string) error {
+func DeleteTestStorage(ctx context.Context, name string) error {
 	if !strings.HasPrefix(name, "test_") {
 		return fmt.Errorf("can only delete test dbs")
 	}
 
-	db, err := OpenDB(ctx, name)
+	db, err := OpenStorage(ctx, name)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer db.client.Close()
 
-	_, err = db.Exec("DROP DATABASE $1", name)
-	return err
-}
-
-// CreateTables creates the described tables.
-func (db *DB) CreateTables(ctx context.Context, tables []*database.Table) error {
-	if db.client == nil {
-		client, err := OpenDB("postgres", db.name)
-		if err != nil {
-			return err
-		}
-		db.client = client
-	}
-	var stmts []string
-	for _, table := range tables {
-		var buf bytes.Buffer
-		fmt.Fprintf(&buf, "CREATE TABLE `%s` (\n", table.Name)
-		for _, col := range table.Columns {
-			fmt.Fprintf(&buf, "\t`%s` %s", col.Name, strings.TrimSuffix(strings.ToUpper(col.Type), "64"))
-			switch col.Type {
-			case "string", "bytes":
-				if col.Size > 0 {
-					fmt.Fprintf(&buf, "(%d)", col.Size)
-				}
-			}
-			for _, key := range table.PrimaryKey {
-				if key == col.Name {
-					fmt.Fprintf(&buf, "`%s`", " PRIMARY KEY")
-				}
-			}
-			fmt.Fprintf(&buf, ",\n")
-		}
-		fmt.Fprintf(&buf, ");\n")
-		stmts = append(stmts, buf.String())
-	}
-
-	_, err = db.Exec(stmts)
+	_, err = db.client.Exec("DROP DATABASE " + name)
 	return err
 }
 
 // ReadOnly executes f in a read-only transaction.
-func (db *DB) ReadOnly(ctx context.Context, f func(context.Context, database.Transaction) error) error {
-	tx, err := db.client.BeginTx()
+func (db *DB) ReadOnly(ctx context.Context, f func(context.Context, tkv.Transaction) error) error {
+	tx, err := db.client.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return err
 	}
-	return f(ctx, &cockroachdbTx{tx})
+	if err := f(ctx, &cockroachdbTx{r: tx}); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 // ReadWrite executes f in a read-write transaction.
-func (db *DB) ReadWrite(ctx context.Context, f func(context.Context, database.Transaction) error) error {
-	tx, err := db.client.BeginTx()
+func (db *DB) ReadWrite(ctx context.Context, f func(context.Context, tkv.Transaction) error) error {
+	tx, err := db.client.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	return f(ctx, &cockroachdbTx{tx})
+	txr, err := db.client.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if err := f(ctx, &cockroachdbTx{w: tx, r: txr}); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	return txr.Commit()
 }
 
 // A cockroachdbTx is the underlying cockroachdb transaction.
 type cockroachdbTx struct {
-	tx *sql.Tx
+	r *sql.Tx
+	w *sql.Tx
 }
 
-// Read reads rows matching keys from the database.
-func (tx *cockroachdbTx) Read(ctx context.Context, table string, keys database.Keys, columns []string) database.Rows {
-
+func (tx *cockroachdbTx) ReadValues(ctx context.Context, keys []string) ([]string, error) {
+	var res []string
+	for _, key := range keys {
+		var k, v string
+		err := tx.r.QueryRowContext(ctx, "SELECT key,value  FROM "+tableName+" WHERE key='"+key+"'").Scan(&k, &v)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return res, nil
+			}
+			tx.r.Rollback()
+			return res, err
+		}
+		res = append(res, v)
+	}
+	return res, nil
 }
 
-// ReadRow reads a single row matching key from the database.
-func (tx *cockroachdbTx) ReadRow(ctx context.Context, table string, key database.Key, columns []string) (database.Row, error) {
-
+func (tx *cockroachdbTx) ReadValue(ctx context.Context, key string) (string, error) {
+	var k, v string
+	err := tx.r.QueryRowContext(ctx, "SELECT key,value  FROM "+tableName+" WHERE key='"+key+"'").Scan(&k, &v)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return v, err
+	}
+	return v, nil
 }
 
 // BufferWrite buffers the given writes.
-func (tx *cockroachdbTx) BufferWrite(writes []database.Mutation) error {
+func (tx *cockroachdbTx) BufferWrites(writes []tkv.Write) error {
+	if tx.w == nil {
+		return fmt.Errorf("readonly")
+	}
 
+	for _, w := range writes {
+		var m string
+		if w.Value == "" {
+			m = fmt.Sprintf("DELETE FROM %s WHERE key = %s", tableName, w.Key)
+		} else {
+			m = fmt.Sprintf("UPSERT INTO %s (key, value) VALUES ('%s', '%s')", tableName, w.Key, w.Value)
+		}
+		_, err := tx.w.Exec(m)
+		if err != nil {
+			tx.w.Rollback()
+			return err
+		}
+	}
+	return nil
 }
