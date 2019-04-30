@@ -10,7 +10,7 @@ import (
 	"os"
 	"testing"
 
-	"golang.org/x/exp/sumdb/internal/tkv/tkvtest"
+	"github.com/gosum/common/tkv/tkvtest"
 )
 
 var testInstance = flag.String("cockroachdb", "", "test cockroachdb instance (postgres://pqgotest:password@localhost/pqgotest?sslmode=verify-full)")

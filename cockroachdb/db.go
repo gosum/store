@@ -11,8 +11,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/gosum/common/tkv"
 	_ "github.com/lib/pq"
-	"golang.org/x/exp/sumdb/internal/tkv"
 )
 
 const tableName = "tkv"
