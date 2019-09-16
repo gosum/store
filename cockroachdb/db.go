@@ -121,9 +121,9 @@ func (tx *cockroachdbTx) ReadValues(ctx context.Context, keys []string) ([]strin
 		var k, v string
 		err := tx.r.QueryRowContext(ctx, "SELECT key,value  FROM "+tableName+" WHERE key='"+key+"'").Scan(&k, &v)
 		if err != nil {
-			//if err == sql.ErrNoRows {
-			//	return res, nil
-			//}
+			if err == sql.ErrNoRows {
+				return res, nil
+			}
 			tx.r.Rollback()
 			return nil, err
 		}
