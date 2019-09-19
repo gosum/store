@@ -75,6 +75,14 @@ func DeleteTestStorage(ctx context.Context, name string) error {
 	return err
 }
 
+// Close closes store
+func (db *DB) Close() error {
+	if db == nil || db.client == nil {
+		return nil
+	}
+	return db.client.Close()
+}
+
 // ReadOnly executes f in a read-only transaction.
 func (db *DB) ReadOnly(ctx context.Context, f func(context.Context, tkv.Transaction) error) error {
 	tx, err := db.client.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
