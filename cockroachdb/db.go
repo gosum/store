@@ -85,70 +85,67 @@ func (db *DB) Close() error {
 
 // ReadOnly executes f in a read-only transaction.
 func (db *DB) ReadOnly(ctx context.Context, f func(context.Context, tkv.Transaction) error) error {
-	tx, err := db.client.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return err
-	}
-	return f(ctx, &cockroachdbTx{r: tx})
+	return f(ctx, &sqlTx{client: db.client})
 }
 
 // ReadWrite executes f in a read-write transaction.
 func (db *DB) ReadWrite(ctx context.Context, f func(context.Context, tkv.Transaction) error) error {
-	tx, err := db.client.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	txr, err := db.client.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return err
-	}
-	return f(ctx, &cockroachdbTx{w: tx, r: txr})
+	return f(ctx, &sqlTx{client: db.client})
 }
 
 // A cockroachdbTx is the underlying cockroachdb transaction.
-type cockroachdbTx struct {
-	r *sql.Tx
-	w *sql.Tx
+type sqlTx struct {
+	client *sql.DB
 }
 
-func (tx *cockroachdbTx) ReadValues(ctx context.Context, keys []string) ([]string, error) {
+func (s *sqlTx) ReadValues(ctx context.Context, keys []string) ([]string, error) {
 	var res []string
+	tx, err := s.client.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return res, err
+	}
+
 	for _, key := range keys {
 		var k, v string
-		err := tx.r.QueryRowContext(ctx, "SELECT key,value  FROM "+tableName+" WHERE key='"+key+"'").Scan(&k, &v)
+		err := tx.QueryRowContext(ctx, "SELECT key,value  FROM "+tableName+" WHERE key='"+key+"'").Scan(&k, &v)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				res = append(res, v)
 				continue
 			}
-			tx.r.Rollback()
+			tx.Rollback()
 			return nil, err
 		}
 		res = append(res, v)
 	}
-	tx.r.Commit()
+	tx.Commit()
 	return res, nil
 }
 
-func (tx *cockroachdbTx) ReadValue(ctx context.Context, key string) (string, error) {
+func (s *sqlTx) ReadValue(ctx context.Context, key string) (string, error) {
 	var k, v string
-	err := tx.r.QueryRowContext(ctx, "SELECT key,value  FROM "+tableName+" WHERE key='"+key+"'").Scan(&k, &v)
+	tx, err := s.client.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return "", err
+	}
+	err = tx.QueryRowContext(ctx, "SELECT key,value  FROM "+tableName+" WHERE key='"+key+"'").Scan(&k, &v)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			tx.r.Commit()
+			tx.Commit()
 			return "", nil
 		}
-		tx.r.Rollback()
+		tx.Rollback()
 		return v, err
 	}
-	tx.r.Commit()
+	tx.Commit()
 	return v, nil
 }
 
 // BufferWrite buffers the given writes.
-func (tx *cockroachdbTx) BufferWrites(writes []tkv.Write) error {
-	if tx.w == nil {
-		return fmt.Errorf("readonly")
+func (s *sqlTx) BufferWrites(writes []tkv.Write) error {
+	tx, err := s.client.BeginTx(context.Background(), nil)
+	if err != nil {
+		return err
 	}
 
 	for _, w := range writes {
@@ -158,12 +155,12 @@ func (tx *cockroachdbTx) BufferWrites(writes []tkv.Write) error {
 		} else {
 			m = fmt.Sprintf("UPSERT INTO %s (key, value) VALUES ('%s', '%s')", tableName, w.Key, w.Value)
 		}
-		_, err := tx.w.Exec(m)
+		_, err := tx.Exec(m)
 		if err != nil {
-			tx.w.Rollback()
+			tx.Rollback()
 			return err
 		}
 	}
-	tx.w.Commit()
+	tx.Commit()
 	return nil
 }
