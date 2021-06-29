@@ -89,11 +89,7 @@ func (db *DB) ReadOnly(ctx context.Context, f func(context.Context, tkv.Transact
 	if err != nil {
 		return err
 	}
-	if err := f(ctx, &cockroachdbTx{r: tx}); err != nil {
-		return err
-	}
-
-	return tx.Commit()
+	return f(ctx, &cockroachdbTx{r: tx})
 }
 
 // ReadWrite executes f in a read-write transaction.
@@ -102,19 +98,11 @@ func (db *DB) ReadWrite(ctx context.Context, f func(context.Context, tkv.Transac
 	if err != nil {
 		return err
 	}
-	txr, err := db.client.BeginTx(ctx, nil)
+	txr, err := db.client.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return err
 	}
-	if err := f(ctx, &cockroachdbTx{w: tx, r: txr}); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-
-	return txr.Commit()
+	return f(ctx, &cockroachdbTx{w: tx, r: txr})
 }
 
 // A cockroachdbTx is the underlying cockroachdb transaction.
@@ -130,13 +118,15 @@ func (tx *cockroachdbTx) ReadValues(ctx context.Context, keys []string) ([]strin
 		err := tx.r.QueryRowContext(ctx, "SELECT key,value  FROM "+tableName+" WHERE key='"+key+"'").Scan(&k, &v)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				return res, nil
+				res = append(res, v)
+				continue
 			}
 			tx.r.Rollback()
 			return nil, err
 		}
 		res = append(res, v)
 	}
+	tx.r.Commit()
 	return res, nil
 }
 
@@ -145,10 +135,13 @@ func (tx *cockroachdbTx) ReadValue(ctx context.Context, key string) (string, err
 	err := tx.r.QueryRowContext(ctx, "SELECT key,value  FROM "+tableName+" WHERE key='"+key+"'").Scan(&k, &v)
 	if err != nil {
 		if err == sql.ErrNoRows {
+			tx.r.Commit()
 			return "", nil
 		}
+		tx.r.Rollback()
 		return v, err
 	}
+	tx.r.Commit()
 	return v, nil
 }
 
@@ -171,5 +164,6 @@ func (tx *cockroachdbTx) BufferWrites(writes []tkv.Write) error {
 			return err
 		}
 	}
+	tx.w.Commit()
 	return nil
 }
