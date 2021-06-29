@@ -32,6 +32,7 @@ func OpenStorage(ctx context.Context, name string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	client.SetConnMaxLifetime(time.Second * 10)
 	db := &DB{name: name, client: client}
 	return db, nil
 }
