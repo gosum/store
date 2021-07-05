@@ -125,7 +125,7 @@ type dbTx struct {
 	w *sql.Tx
 }
 
-func (tx *cockroachdbTx) ReadValues(ctx context.Context, keys []string) ([]string, error) {
+func (tx *dbTx) ReadValues(ctx context.Context, keys []string) ([]string, error) {
 	var res []string
 	for _, key := range keys {
 		var k, v string
@@ -142,7 +142,7 @@ func (tx *cockroachdbTx) ReadValues(ctx context.Context, keys []string) ([]strin
 	return res, nil
 }
 
-func (tx *cockroachdbTx) ReadValue(ctx context.Context, key string) (string, error) {
+func (tx *dbTx) ReadValue(ctx context.Context, key string) (string, error) {
 	var k, v string
 	err := tx.r.QueryRowContext(ctx, "SELECT key,value  FROM "+tableName+" WHERE key='"+key+"'").Scan(&k, &v)
 	if err != nil {
@@ -155,7 +155,7 @@ func (tx *cockroachdbTx) ReadValue(ctx context.Context, key string) (string, err
 }
 
 // BufferWrite buffers the given writes.
-func (tx *cockroachdbTx) BufferWrites(writes []tkv.Write) error {
+func (tx *dbTx) BufferWrites(writes []tkv.Write) error {
 	if tx.w == nil {
 		return fmt.Errorf("readonly")
 	}
